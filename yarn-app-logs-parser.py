@@ -58,9 +58,13 @@ def extract_tez_log(tez_queue,app_id):
                 info.append(dic.get("SHUFFLE_BYTES",0))
                 info.append(dic.get("SHUFFLE_PHASE_TIME",0))
                 info.append(dic.get("MERGE_PHASE_TIME",0))
+                 
                 successfulAttemptID = dic["successfulAttemptID"]
-                task_container_info = container_task_map[successfulAttemptID]
-                info.extend(task_container_info)
+                if successfulAttemptID != 'null' and container_task_map.has_key(successfulAttemptID):
+                    task_container_info = container_task_map[successfulAttemptID]
+                    info.extend(task_container_info)
+                else:
+                    info.extend(("",0,0))
                 tez_queue.put(info)
             except Exception as e:
                 print "Unable to parse application %s:%s" % (app_id,e)
@@ -105,24 +109,29 @@ def put_counters_to_queue(dic,info,tez_queue):
     info.append(dic.get("REDUCE_SHUFFLE_BYTES",0))
     info.append(dic.get("SHUFFLE_PHASE_TIME",0))
     info.append(dic.get("MERGE_PHASE_TIME",0))
+    info.append(dic.get("assignedContainerId",""))
+    info.append(dic.get("memory",0))
+    info.append(dic.get("vcores",0))
     tez_queue.put(info)
     
 #通过jobhistory api获取mr任务的信息
-def mr_attempt_counters(dic,job_id,task_id,attempt_id,memory_vcores):
+def mr_attempt_counters(session,job_id,task_id,attempt_id,memory_vcores):
+    dic = {}
     timeout = 10
     url = "http://cdhprodnm01.yili.com:19888/ws/v1/history/mapreduce/jobs/%s/tasks/%s/attempts/%s" % (job_id,task_id,attempt_id)
-    session = requests.Session()
-    adapter = HTTPAdapter(max_retries=3)
-    session.mount('http://', adapter)
     data = session.get(url, timeout=timeout).json()
     dic["startTime"] = data['taskAttempt']['startTime']
     dic["finishTime"] = data['taskAttempt']['finishTime']
     dic["timeTaken"] = data['taskAttempt']['elapsedTime']
     dic["assignedContainerId"] = data['taskAttempt']['assignedContainerId']
     if 'r' in attempt_id:
-        dic[""]
+        dic["memory"] = memory_vcores["mapreduce.reduce.memory.mb"]
+        dic["vcores"] = memory_vcores["mapreduce.reduce.cpu.vcores"]
         dic["SHUFFLE_PHASE_TIME"] = data['taskAttempt']['elapsedShuffleTime']
         dic["MERGE_PHASE_TIME"] = data['taskAttempt']['elapsedMergeTime']
+    else:
+        dic["memory"] = memory_vcores["mapreduce.map.memory.mb"]
+        dic["vcores"] = memory_vcores["mapreduce.map.cpu.vcores"]
     
     url = "http://cdhprodnm01.yili.com:19888/ws/v1/history/mapreduce/jobs/%s/tasks/%s/attempts/%s/counters" % (job_id,task_id,attempt_id)
     data = session.get(url, timeout=timeout).json()
@@ -134,31 +143,20 @@ def mr_attempt_counters(dic,job_id,task_id,attempt_id,memory_vcores):
             counter_name = counter["name"]
             counter_value = counter["value"]
             dic[counter_name] = counter_value
+    return dic
 #提取mr任务日志中的统计数据
 def extract_mr_log(tez_queue,app_id):
-    cmd = "yarn logs -applicationId %s |grep 'Final Counters for'" % (app_id)
-    output = commands.getoutput(cmd)
-    dic = {}
-    for line in output.splitlines():
-        match = re.search(r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}).+(attempt_\d+_\d+_\w+_\d+_\d+)', line)
-        if match:
-            counter_time = match.group(1)
-            counter_time = counter_time.replace(",",".")
-            attempt_id = match.group(2)
-            task_id = get_task_id(attempt_id)
-            vertex_name = get_vertex_name(attempt_id)
-            info = [app_id,task_id,task_id,vertex_name,counter_time,"SUCCEEDED"]
-            break
+    
     job_id = app_id.replace("application","job")
     url = "http://cdhprodnm01.yili.com:19888/ws/v1/history/mapreduce/jobs/%s/conf" % job_id
     session = requests.Session()
     adapter = HTTPAdapter(max_retries=3)
     session.mount('http://', adapter)
     data = session.get(url, timeout=10).json()
-    json_data = json.loads(data)、
+    
     memory_vcores = {}
     # 提取 mapreduce map和reduce的memory和vcores信息
-    for property in json_data['conf']['property']:
+    for property in data['conf']['property']:
         if property['name'] == 'mapreduce.map.cpu.vcores':
             memory_vcores[property['name']] = property['value']
             continue
@@ -171,14 +169,23 @@ def extract_mr_log(tez_queue,app_id):
         if property['name'] == 'mapreduce.reduce.memory.mb':
             memory_vcores[property['name']] = property['value']
             continue
-    
-    try:
-        mr_attempt_counters(dic,job_id,task_id,attempt_id,memory_vcores)
-        put_counters_to_queue(dic,info,tez_queue)
-    except Exception as e:
-        print "Unable to parse application %s:%s" % (app_id,e)
-        traceback.print_exc()
-        
+    cmd = "yarn logs -applicationId %s |grep 'Final Counters for'" % (app_id)
+    output = commands.getoutput(cmd)
+    for line in output.splitlines():
+        match = re.search(r'(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d{3}).+(attempt_\d+_\d+_\w+_\d+_\d+)', line)
+        if match:
+            counter_time = match.group(1)
+            counter_time = counter_time.replace(",",".")
+            attempt_id = match.group(2)
+            task_id = get_task_id(attempt_id)
+            vertex_name = get_vertex_name(attempt_id)
+            info = [app_id,task_id,task_id,vertex_name,counter_time,"SUCCEEDED"]
+            try:
+                dic = mr_attempt_counters(session,job_id,task_id,attempt_id,memory_vcores)
+                put_counters_to_queue(dic,info,tez_queue)
+            except Exception as e:
+                print "Unable to parse application %s:%s" % (app_id,e)
+                traceback.print_exc()
 
 def insert_results(q,previous_hour):
     payload = ""
@@ -208,7 +215,7 @@ def main(file_path):
     
     database = 'ds'
     tablename = 'yarn_container_counters'
-    columns = "application_id,dag_id,task_id,vertex_name,counter_time,status,startTime,finishTime,timeTaken,file_bytes_read,file_bytes_written,hdfs_bytes_read,hdfs_bytes_written,gc_time_millis,cpu_milliseconds,physical_memory_bytes,virtual_memory_bytes,committed_heap_bytes,input_records_processed,shuffle_bytes,shuffle_phase_time,merge_phase_time"
+    columns = "application_id,dag_id,task_id,vertex_name,counter_time,status,startTime,finishTime,timeTaken,file_bytes_read,file_bytes_written,hdfs_bytes_read,hdfs_bytes_written,gc_time_millis,cpu_milliseconds,physical_memory_bytes,virtual_memory_bytes,committed_heap_bytes,input_records_processed,shuffle_bytes,shuffle_phase_time,merge_phase_time,container_id,container_memory_mb,container_vcores"
     api = 'http://10.150.3.30:8030/api/%s/%s/_stream_load' % (database, tablename)
     headers={
         #"Content-Type":  "text/html; charset=UTF-8",
@@ -246,13 +253,13 @@ if __name__=='__main__':
     #格式2024010112    
     previous_hour = sys.argv[1]
     with connection.cursor() as cursor:
-        sql = "select ya.id,ya.applicationType from task_applications ta join yarn_applications ya on ta.application_id = ya.id where FROM_UNIXTIME(ya.finishedTime / 1000,'%%Y%%m%%d%%H') = '%s'" % (previous_hour)
+        sql = "select ya.id,ya.applicationType from task_applications ta join yarn_applications ya on ta.application_id = ya.id where FROM_UNIXTIME(ya.finishedTime / 1000,'%%Y%%m%%d%%H') = '%s' and ya.state != 'RUNNING' " % (previous_hour)
         print sql
         cursor.execute(sql)
         results = cursor.fetchall()
         print "app任务数量%s" % len(results)
     connection.close()
-    p = Pool(100)
+    p = Pool(50)
     # 父进程创建Queue，并传给各个子进程：
     tez_queue = Manager().Queue()
     spark_queue = Manager().Queue()
@@ -268,5 +275,5 @@ if __name__=='__main__':
     # 等待进程池中的所有进程执行完毕
     p.join()
     if not tez_queue.empty():
-        print "任务数%s" % tez_queue.qsize()
+        print "总记录数%s" % tez_queue.qsize()
         insert_results(tez_queue,previous_hour)

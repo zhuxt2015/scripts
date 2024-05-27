@@ -63,9 +63,9 @@ def process_log_file(log_file_path, modify_date):
         apps.update(app_ids)
 
         
-    cmd = "grep -E '\t.*/DATA.*\.log' %s" % log_file_path
+    cmd = "grep -E '\t?.*/DATA.*\.log|\t?.*/home/bigdata_ibm.*\.log' %s" % log_file_path
     output = commands.getoutput(cmd)
-    match = re.search(r"^\t.*?(/DATA.*\.log)", output) if output else None
+    match = re.search(r"\t?.*(/DATA.*\.log|/home/bigdata_ibm.*\.log)", output) if output else None
     if match:
         log_path = match.group(1)
         print "任务内置的日志路径:%s" % log_path

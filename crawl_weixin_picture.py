@@ -7,7 +7,7 @@ from bs4 import BeautifulSoup
 import datetime
 import os
 # url = input("请输入url：")
-url='https://mp.weixin.qq.com/s/aPFcsnYUEsQojPaE7G87rA'#获取连接
+url='https://mp.weixin.qq.com/s/NJgtgj2O1y9F9fEjSDN-mw'
 curr_time = datetime.datetime.now()#获取系统时间
 print(curr_time)#打印时间 测试用
 headers = {
