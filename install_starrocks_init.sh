@@ -1,5 +1,5 @@
 #!/bin/bash 
-set -e
+set -eu
 ###################################################
 # Usage: install_init.sh
 # 功能:  集群部署入场条件检查  
@@ -7,9 +7,6 @@ set -e
 
 #ntp server ip
 ntp_server_ip=10.101.1.151 
-
-# cm server ip
-cm_server_ip=10.150.4.47
 
 ###################################################
 # 设置字符集为en_US.UTF8
@@ -34,19 +31,51 @@ function set_utf8()
 }
 
 ###################################################
+# 安装yum源
+###################################################
+function install_yum()
+{
+    curl -o /etc/yum.repos.d/CentOS-YILI.repo http://10.251.136.11:8080/centos/repo.d/CentOS-YILI.repo
+}
+
+###################################################
 # 修改系统限制参数（最大打开文件数以及最大进程数）
 ###################################################
 
 function set_limits()
 {
-	if ! grep "* soft nofile 65535" /etc/security/limits.conf
+	if ! grep "^* soft nofile" /etc/security/limits.conf
 	then
-		echo "* soft nofile 65535" >>/etc/security/limits.conf
+		echo "* soft nofile 655350" >>/etc/security/limits.conf
 	fi
 		
-	if ! grep "* hard nofile 65535" /etc/security/limits.conf
+	if ! grep "^* hard nofile" /etc/security/limits.conf
 	then
-		echo "* hard nofile 65535" >>/etc/security/limits.conf
+		echo "* hard nofile 655350" >>/etc/security/limits.conf
+	fi
+	if ! grep "^* hard nproc" /etc/security/limits.conf
+	then
+		echo "* hard nproc 65535" >>/etc/security/limits.conf
+	fi
+	if ! grep "^* soft nproc" /etc/security/limits.conf
+	then
+		echo "* soft nproc 65535" >>/etc/security/limits.conf
+	fi
+	if ! grep "^* soft stack" /etc/security/limits.conf
+	then
+		echo "* soft stack unlimited" >>/etc/security/limits.conf
+	fi
+	if ! grep "^* hard stack" /etc/security/limits.conf
+	then
+		echo "* hard stack unlimited" >>/etc/security/limits.conf
+	fi
+	if ! grep "^* soft memlock" /etc/security/limits.conf
+	then
+		echo "* soft memlock unlimited" >>/etc/security/limits.conf
+	fi
+	if ! grep "^* hard memlock" /etc/security/limits.conf
+	then
+		echo "* hard memlock unlimited" >>/etc/security/limits.conf
 	fi
 		
 	sed -i "s/4096/65535/g" /etc/security/limits.d/20-nproc.conf
@@ -61,12 +90,12 @@ function off_selinux()
     sed -i "s/^SELINUX=.*/SELINUX=disabled/g" /etc/sysconfig/selinux
 	  sed -i 's/SELINUXTYPE/#SELINUXTYPE/' /etc/selinux/config
     sed -i "s/^SELINUX=.*/SELINUX=disabled/g" /etc/selinux/config
-    SELStatus=$(setenforce 0 2>/dev/null ; getenforce)
+    SELStatus=$(getenforce)
     if [ "X"${SELStatus} = "XPermissive" -o "X"${SELStatus} = "XDisabled" ] ;
     then
-     echo 'succeed to close SELinux.'
+      echo 'succeed to close SELinux.'
     else
-     echo 'fail to close SELinux.'
+      setenforce 0
     fi
 }
 
@@ -113,20 +142,26 @@ function off_swappiness()
 
 function net_config()
 {
-  sysctl net.ipv4.tcp_abort_on_overflow=1
-	sysctl net.core.somaxconn=1024
+  #如果系统当前因后台进程无法处理的新连接而溢出，则允许系统重置新连接
 	if ! grep "net.ipv4.tcp_abort_on_overflow=1" /etc/sysctl.conf
 	then
 		echo "net.ipv4.tcp_abort_on_overflow=1" >> /etc/sysctl.conf
 	fi
-    if ! grep "net.core.somaxconn=1024" /etc/sysctl.conf
+  #设置监听 Socket 队列的最大连接请求数为 1024
+  if ! grep "net.core.somaxconn=1024" /etc/sysctl.conf
 	then
 		echo "net.core.somaxconn=1024" >> /etc/sysctl.conf
+	fi
+  #Memory Overcommit 允许操作系统将额外的内存资源分配给进程
+  if ! grep "^vm.overcommit_memory" /etc/sysctl.conf
+	then
+		echo "vm.overcommit_memory=1" >> /etc/sysctl.conf
 	fi
   #设置网卡ring buffer，避免丢包
   if ! grep 'ethtool.*rx' /etc/rc.d/rc.local;then
     for i in `cat /proc/net/bonding/bond0 |grep 'Slave Interface:' |awk '{print $3}'`; do ethtool -G $i rx $(ethtool -g $i|sed -n '3p'|awk '{print $2}');echo "/usr/sbin/ethtool -G $i rx $(ethtool -g $i|sed -n '3p'|awk '{print $2}')" >> /etc/rc.d/rc.local;done
   fi
+	
 }
 
 ###################################################
@@ -151,7 +186,7 @@ function set_umask()
 {
 	if ! grep "umask 0022" /etc/profile
 	then
-        echo umask 0022 >> /etc/profile
+    echo "umask 0022" >> /etc/profile
 	fi
 }
 
@@ -189,7 +224,11 @@ function set_ntpd()
 		    echo "server ${ntp_server_ip} prefer" >> /etc/ntp.conf
 		fi
 		systemctl enable ntpd
-    systemctl disable chronyd
+    if command -v chronyd &> /dev/null;then
+      echo "chrony 已安装,执行关闭命令"
+      systemctl stop chronyd
+      systemctl disable chronyd
+    fi
     systemctl start ntpd
     systemctl status ntpd
 }
@@ -227,53 +266,21 @@ function off_tuned()
 function install_jdk()
 {
     #yum install jdk
-	  yum install -y oracle-j2sdk1.8.x86_64
+	  yum install -y java-1.8.0-openjdk.x86_64
 
     #set environment
-    if ! grep "JAVA_HOME=/usr/java/jdk1.8.0_181-cloudera" /etc/profile 
+    if ! grep "^export JAVA_HOME=" /etc/profile 
     then
-            echo "export JAVA_HOME=/usr/java/jdk1.8.0_181-cloudera" | sudo tee -a /etc/profile
+            echo "export JAVA_HOME=/etc/alternatives/jre" | sudo tee -a /etc/profile
             echo 'export PATH=$PATH:$JAVA_HOME/bin' | sudo tee -a /etc/profile
     fi
 
     #update environment
-    source /etc/profile
+    #source /etc/profile
     java -version
     echo "jdk is installed !"
 }
 
-###################################################
-# 替换snappy包
-###################################################
-
-function install_snappy()
-{
-        yum remove snappy -y
-        yum install snappy* -y
-        yum -y install openldap-clients nss-pam-ldapd expect
-}
-
-###################################################
-# 拷贝yum文件
-###################################################
-
-function copy_yum()
-{
-    rm -rf /etc/yum.repos.d/*
-    echo "[cm]
-name = cm
-baseurl = http://${cm_server_ip}/cm/
-enabled = 1
-gpgcheck = 0" > /etc/yum.repos.d/cm.repo
-    echo "[cdh]
-name = cdh
-baseurl = http://${cm_server_ip}/cdh/
-enabled = 1
-gpgcheck = 0" > /etc/yum.repos.d/cdh.repo
-    curl -o /etc/yum.repos.d/CentOS-YILI.repo http://10.251.136.11:8080/centos/repo.d/CentOS-YILI.repo
-    #yum clean all
-    #yum makecache
-}
 
 ###################################################
 # 修改主机名
@@ -396,6 +403,13 @@ function main()
         return 1
     fi
     
+    #安装yum源
+    echo "begin install yum repo"
+    install_yum
+    if [ $? -ne 0 ]; then
+        return 1
+    fi
+    
     #修改系统限制参数
     echo "begin set limits"
     set_limits
@@ -472,13 +486,6 @@ function main()
     if [ $? -ne 0 ]; then
         return 1
     fi   
-    
-    #拷贝yum文件
-    echo "begin copy yum"
-    copy_yum
-    if [ $? -ne 0 ]; then
-        return 1
-    fi   
 		
     #安装jdk
 	  echo "begin install jdk"
@@ -487,14 +494,6 @@ function main()
         return 1
     fi   
     
-    
-    
-    #替换snappy包
-    echo "begin install snappy"
-    install_snappy
-    if [ $? -ne 0 ]; then
-        return 1
-    fi   
 	
     #设置主机时间同步
     echo "begin set ntpd"
@@ -509,7 +508,8 @@ function main()
     if [ $? -ne 0 ]; then
         return 1
     fi   
-        
+    
+    sysctl -p
 }
 
 main

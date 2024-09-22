@@ -1,7 +1,7 @@
 #!/bin/bash
 
 #忽略的磁盘
-ignore_disk=sda
+ignore_disk=$(lsblk -nlo NAME,MOUNTPOINT | awk '$2=="/boot" {print $1}' | sed 's/[0-9]*$//')
 
 # 计数器,用于创建挂载点
 counter=0

@@ -1,0 +1,64 @@
+apiVersion: flink.apache.org/v1beta1
+kind: FlinkDeployment
+metadata:
+  name: flink-xz
+spec:
+  # 官方镜像少 jar ,我自己打的镜像，只用于演示本文，实际生产请自行构建镜像
+  # Flink CDC 目前只支持 flink 1.14.* ,暂不支持 1.15.*
+  image: yldc-docker.pkg.coding.yili.com/cloud-dp/public/flink:release-1.14.6-52-6c18c06
+  # Flink 版本改成 1.14.*
+  flinkVersion: v1_14
+  flinkConfiguration:
+    taskmanager.numberOfTaskSlots: "2"
+    state.savepoints.dir: file:///flink-xz/savepoints
+    state.checkpoints.dir: file:///flink-xz/checkpoints
+    state.backend: rocksdb
+    state.checkpoint-storage: filesystem
+    state.backend.incremental: "true"
+    high-availability: org.apache.flink.kubernetes.highavailability.KubernetesHaServicesFactory
+    high-availability.storageDir: file:///flink-xz/ha
+    restart-strategy.type: fixed-delay
+    restart-strategy.fixed-delay.attempts: "10"
+    classloader.check-leaked-classloader: "false"
+    metrics.reporter.promgateway.class: org.apache.flink.metrics.prometheus.PrometheusPushGatewayReporter
+    metrics.reporter.promgateway.host: flink-gw.dcin-test.digitalyili.com
+    metrics.reporter.promgateway.port: "80"
+    metrics.reporter.promgateway.jobName: flink-application
+    metrics.reporter.promgateway.randomJobNameSuffix: "true"
+    metrics.reporter.promgateway.deleteOnShutdown: "false"
+    metrics.reporter.promgateway.interval: 30 SECONDS
+    slotmanager.number-of-slots.max: "40"
+  serviceAccount: flink
+  jobManager:
+    resource:
+      memory: "2048m"
+      cpu: 1
+  taskManager:
+    resource:
+      memory: "4096m"
+      cpu: 2
+  podTemplate:
+    spec:
+      initContainers:
+        - name: init-jobmanager
+          image: alpine
+          command:
+            - chown
+            - -R
+            - 9999:9999
+            - /flink-xz
+          volumeMounts:
+            - name: pv-storage
+              mountPath: /flink-xz
+      containers:
+        - name: flink-main-container
+          volumeMounts:
+          - mountPath: /flink-xz
+            name: pv-storage
+          env:
+          - name: TZ
+            value: "Asia/Shanghai"
+      volumes:
+      - name: pv-storage
+        persistentVolumeClaim:
+          claimName: prod-flink

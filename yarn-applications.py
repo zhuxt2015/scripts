@@ -76,7 +76,7 @@ def get_app_info(data):
             num_am_container_preempted, log_aggregation_status, unmanaged_application,
             am_node_label_expression
         )
-        value_str = "\01".join([str(x) for x in value])
+        value_str = "\01".join([x.encode('utf-8') if isinstance(x, unicode) else str(x)  for x in value])
         values.append(value_str)
 
 session = requests.Session()

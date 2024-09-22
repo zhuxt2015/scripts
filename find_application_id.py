@@ -15,13 +15,6 @@ logs_dir = "/home/dolphinscheduler-1.3.8/ds/logs"
 #logs_dir = "/home/dolphinscheduler-1.3.8/ds/logs/1344/3322565"
 
 task_info_pattern = r"(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3}).*?/tmp/dolphinscheduler/exec/process/(\d+)/(\d+)/(\d+)/(\d+)"
-connection = pymysql.connect(
-    host='10.150.3.30',
-    port=9030,
-    user='ds',
-    password='dsSR123!',
-    database='ds'
-)
 
 values = []
 
@@ -63,7 +56,7 @@ def process_log_file(log_file_path, modify_date):
         apps.update(app_ids)
 
         
-    cmd = "grep -E '\t?.*/DATA.*\.log|\t?.*/home/bigdata_ibm.*\.log' %s" % log_file_path
+    cmd = "grep -E '\t?.*/DATA.*\.log|\t?.*/home/bigdata_ibm.*?\.log$' %s" % log_file_path
     output = commands.getoutput(cmd)
     match = re.search(r"\t?.*(/DATA.*\.log|/home/bigdata_ibm.*\.log)", output) if output else None
     if match:
@@ -102,13 +95,23 @@ def process_log_file(log_file_path, modify_date):
             if app_id.startswith("hive"):
                 hive_query_id = app_id
                 query_sql = "select application_id from hiveserver2_query_log where query_id = '%s'" % app_id
-                with connection.cursor() as cursor:
-                    cursor.execute(query_sql)
-                    row = cursor.fetchone()
-                    if row is not None:
-                        app_id = row[0]
-                    else:
-                        continue
+                connection = pymysql.connect(
+                    host='10.150.3.30',
+                    port=9030,
+                    user='ds',
+                    password='dsSR123!',
+                    database='ds'
+                )
+                try:
+                    with connection.cursor() as cursor:
+                        cursor.execute(query_sql)
+                        row = cursor.fetchone()
+                        if row is not None:
+                            app_id = row[0]
+                        else:
+                            continue
+                finally:
+                    connection.close()
             value = (task_id,modify_date,app_id,project_id,definition_id,instance_id,raw_script, sql,hive_query_id, task_start_time)
             #print value
             values.append(value)
@@ -159,7 +162,7 @@ for root, dirs, files in os.walk(logs_dir):
             if str(formatted_time) == previous_hour:
                 print log_file_path
                 process_log_file(log_file_path, modified_date)
-connection.close()
+
                 
 columns = "task_id,dt,application_id,project_id,process_definition_id,process_instance_id,script,sql,hive_query_id,task_start_time"
 tablename = 'task_applications'

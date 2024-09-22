@@ -1,5 +1,5 @@
 #!/bin/bash 
-#set -e
+set -e
 ###################################################
 # Usage: install_init.sh
 # 功能:  集群部署入场条件检查  
@@ -7,6 +7,9 @@
 
 #ntp server ip
 ntp_server_ip=10.119.14.67
+
+# cm server ip
+cm_server_ip=10.116.14.66
 
 ###################################################
 # 设置字符集为en_US.UTF8
@@ -120,7 +123,10 @@ function net_config()
 	then
 		echo "net.core.somaxconn=1024" >> /etc/sysctl.conf
 	fi
-	
+  #设置网卡ring buffer，避免丢包
+  if ! grep 'ethtool.*rx' /etc/rc.d/rc.local;then
+    for i in `cat /proc/net/bonding/bond0 |grep 'Slave Interface:' |awk '{print $3}'`; do ethtool -G $i rx $(ethtool -g $i|sed -n '3p'|awk '{print $2}');echo "/usr/sbin/ethtool -G $i rx $(ethtool -g $i|sed -n '3p'|awk '{print $2}')" >> /etc/rc.d/rc.local;done
+  fi
 }
 
 ###################################################
@@ -186,7 +192,6 @@ function set_ntpd()
     systemctl disable chronyd
     systemctl start ntpd
     systemctl status ntpd
-    ntpq -pn
 }
 
 ###################################################
@@ -255,20 +260,19 @@ function install_snappy()
 function copy_yum()
 {
     rm -rf /etc/yum.repos.d/*
-		echo '[cm]
+    echo "[cm]
 name = cm
-baseurl = http://10.119.14.66/cm/
+baseurl = http://${cm_server_ip}/cm/
 enabled = 1
-gpgcheck = 0' > /etc/yum.repos.d/cm.repo
-		
-		echo '[cdh]
+gpgcheck = 0" > /etc/yum.repos.d/cm.repo
+    echo "[cdh]
 name = cdh
-baseurl = http://10.119.14.66/cdh/
+baseurl = http://${cm_server_ip}/cdh/
 enabled = 1
-gpgcheck = 0' > /etc/yum.repos.d/cdh.repo
-		curl -o /etc/yum.repos.d/CentOS-YILI.repo http://10.251.136.11:8080/centos/repo.d/CentOS-YILI.repo
-    yum clean all
-    yum makecache
+gpgcheck = 0" > /etc/yum.repos.d/cdh.repo
+    curl -o /etc/yum.repos.d/CentOS-YILI.repo http://10.251.136.11:8080/centos/repo.d/CentOS-YILI.repo
+    #yum clean all
+    #yum makecache
 }
 
 ###################################################
